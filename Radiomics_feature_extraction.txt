@@ -1,0 +1,107 @@
+#Radiomics feature extraction
+
+# Cell 1 - Installing required libraries for feature extraction
+!pip install pyradiomics # For the extraction of radiomics features
+!pip install SimpleITK # Handles image datset as medical image required in pyradiomics
+!pip install pandas # Stores data from analysis into tables
+!pip install numpy # For numerical operations and array manipulation
+!pip install pillow # For handling images in Python
+
+
+
+
+
+
+
+# Cell 2 - Importing packages for feature extraction
+from radiomics import featureextractor # For the extraction of radiomics features
+import SimpleITK as sitk # Handles image datset as medical image required in pyradiomics       
+import pandas as pd # Stores data from analysis into tables                  
+import numpy as np # For numerical operations and array manipulation                   
+from PIL import Image # For handling images in Python                 
+   import os # For interacting with the operating system
+   from glob import glob # For searching for specific file patterns e.g., .TIFF files
+
+
+
+
+
+
+#Cell 3 - feature extraction code
+# === USER INPUT: set your treatment folders here ===
+FOLDER_1 = "/Users/Input/Treatment_1_norm"  # <-- change to your Treatment_1 folder path
+FOLDER_2 = "/Users/Input/Treatment_2_norm"  # <-- change to your Treatment_2 folder path
+
+OUTPUT_BASE = "/Users/Output"          # <-- change to your desired output folder
+output_csv  = os.path.join(OUTPUT_BASE, "Radiomics_results.csv")
+
+# === COLLECT FILES ===
+image_files = []
+for folder in [FOLDER_1, FOLDER_2]:
+    group = os.path.basename(folder)   # group name = folder name (e.g., Treatment_1_norm)
+    tif_files = glob(os.path.join(folder, "*.tif"))
+    for f in tif_files:
+        image_files.append({"Filepath": f, "Group": group})
+
+df_files = pd.DataFrame(image_files)
+
+# === SETUP RADIOMICS EXTRACTOR ===
+extractor = featureextractor.RadiomicsFeatureExtractor()
+extractor.enableImageTypes(Original={})  # raw image features
+feature_classes = [
+    "firstorder", "shape2D", "glcm", "glrlm", "glszm", "gldm", "ngtdm"
+]
+for fc in feature_classes:
+    extractor.enableFeatureClassByName(fc)
+
+# === STORE RESULTS ===
+results = []
+
+# === PROCESS EACH IMAGE ===
+for idx, row in df_files.iterrows():
+    filepath = row["Filepath"]
+    group = row["Group"]
+    filename = os.path.basename(filepath)
+
+    try:
+        # Read grayscale TIF
+        img = Image.open(filepath).convert("L")
+        img_np = np.array(img)
+
+        print(f"Processing {filename}, shape={img_np.shape}, dtype={img_np.dtype}")
+
+        # Mask = all nonzero pixels are ROI
+        mask = np.ones_like(img_np, dtype=np.uint8)
+        mask[img_np == 0] = 0
+
+        sitk_image = sitk.GetImageFromArray(img_np)
+        sitk_mask  = sitk.GetImageFromArray(mask)
+
+        # Extract features
+        features = extractor.execute(sitk_image, sitk_mask)
+
+        # Save row
+        row_out = {"Filename": filename, "Group": group}
+        row_out.update(features)
+        results.append(row_out)
+
+    except Exception as e:
+        print(f"Feature extraction error: {filename}: {e}")
+
+# === SAVE RESULTS ===
+df_results = pd.DataFrame(results)
+
+# Convert col names to string before filtering
+df_results.columns = df_results.columns.astype(str)
+df_results = df_results.loc[:, ~df_results.columns.str.startswith("diagnostics")]
+
+# Reorder so 'Filename' and 'Group' are always first
+cols = ["Filename", "Group"] + [c for c in df_results.columns if c not in ["Filename", "Group"]]
+df_results = df_results[cols]
+
+os.makedirs(OUTPUT_BASE, exist_ok=True)
+df_results.to_csv(output_csv, index=False)
+
+print(f"Radiomics features extracted from normalized images")
+print(f"Saved to: {output_csv}")
+
