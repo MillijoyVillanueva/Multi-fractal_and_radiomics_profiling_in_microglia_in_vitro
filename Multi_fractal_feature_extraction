@@ -1,0 +1,1164 @@
+#Multi-fractal feature extraction
+
+
+#Cell 1 - Installing required libraries for feature extraction
+!pip install numpy # For numerical operations and array manipulation
+!pip install pandas # Stores data from analysis into tables
+!pip install tqdm # Shows progress of analysis by showcasing a progress bar
+!pip install scipy # For signal and image preprocessing
+!pip install scikit-image # For image pre-processing
+!pip install opencv-python # Image resizing, conversion, and morphological operations
+!pip install tifffile # For manipulating .TIFF file images
+
+
+
+
+
+
+#Cell 2 - Importing packages for feature extraction
+import os, glob, gzip, zlib, io # To interact with the operating system, searching for patterns in file, compression algorithm, and reserved import for errors in image compression or file saving
+
+import cv2 # For handling grayscale and multi-channel TIFFS
+import numpy as np # For numerical operations and array manipulation
+import pandas as pd # Stores data from analysis into tables
+import tifffile # For manipulating .TIFF file images
+from tqdm import tqdm # Shows progress of analysis by showcasing a progress bar
+
+
+from scipy.fft import fft2, fftshift # To apply Fast Fourier Transform operations
+from scipy.ndimage import sobel # Used to measure edge strength and local variations, and contribute to the pyramid gradient features
+from scipy.spatial import Delaunay, # build triangulations over image
+cKDTree # Used in correlation-based dimensions measure correlation integrals
+from scipy.signal import get_window # To apply window functions e.g., Rectangular, Barlett, Hamming etc.
+from skimage.exposure import histogram # For histogram computation 
+from skimage.filters import threshold_otsu # To apply automatic otsu thresholding
+from skimage.measure import shannon_entropy # For measuring entropy
+from skimage.morphology import disk, diamond, square, dilation, erosion # Provide structuring elements (e.g., square, disk, diamond) for fractal/Minkowski measures
+from skimage.transform import resize # To create smaller versions of an image
+
+
+
+
+
+
+#Cell 3 - Feature extraction code
+np.random.seed(0)
+
+# --------- CONFIG (EDIT YOUR PATHS) ----------
+GROUP_FOLDERS = {
+    "Treatment_1_norm": "/User/Input/Treatment_1_norm",
+    "Treatment_2_norm": "/User/Input/Treatment_2_norm",
+}
+OUTPUT_CSV = "/Users/Output/MFTA_features.csv"
+os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
+
+# Downscale edge for heavy features (set lower for speed, higher for fidelity)
+MAX_SIDE_FOR_HEAVY = 1024  # e.g., 768 for faster runs, None to disable
+
+# --------- FIXED COLUMN ORDER (aligned to your segmented schema) ----------
+FEATURE_COLS = [
+    "ParDim","CubeCount","TriangDim","PoSpecDim","SasDifBCDim","DBC","RDBC",
+    "CorDim","Dir_Hor_Vert","Dir_Mean_Rad",
+    "FFT_CA1_Rectangular","FFT_MLS_Rectangular","FFT_CA2_Rectangular",
+    "FFT_CA1_Bartlett","FFT_MLS_Bartlett","FFT_CA2_Bartlett",
+    "FFT_CA1_Hamming","FFT_MLS_Hamming","FFT_CA2_Hamming",
+    "FFT_CA1_Hanning","FFT_MLS_Hanning","FFT_CA2_Hanning",
+    "FFT_CA1_Blackman","FFT_MLS_Blackman","FFT_CA2_Blackman",
+    "FFT_CA1_Gaussian","FFT_MLS_Gaussian","FFT_CA2_Gaussian",
+    "FFT_CA1_Parzen","FFT_MLS_Parzen","FFT_CA2_Parzen",
+    "Hig1D_Single_cent","Hig1D_Meander","Hig1D_Mean_RC","Hig1D_Mean_4RL","Hig1D_Mean180RL",
+    "FAI_Single_cent","FAI_Meander","FAI_Mean_RC","FAI_4RL","FAI_180RL",
+    "Hig2D_KFD","Hig2D_MultD_1","Hig2D_Mult_D2","Hig2D_Sq_D","Hig2D_Direct_D","Hig2D_Triangle",
+    "Mass_Rad_Dim",
+    "Mink_Blan_Sq","Mink_Blan_Disk","Mink_Blan_Diamond","Mink_Blan_Hor","Mink_Blan_Vert",
+    "Mink_VarDil_Sq","Mink_VarDil_Disk","Mink_VarDil_Diamond","Mink_VarDil_Hor","Mink_VarDil_Vert",
+    "RP_Lacunarity","SV_Lacunarity",
+    "NKC_ZIP","NKS_ZLIB","NKS_GZIP","RGB_KC_PNG","RGB_KC_ZIP",
+    "FLBC_Differ","FLBC_DVV","FLBC_DVP1","FLLBC_Differ","FLLBC_DVV","FLLBC_DVP1",
+    "FLSB_Differ","FLSB_DVV","FLSB_DVP1","FLSBL_Differ","FLSBL_DVV","FLSBL_DVP1",
+    "MD_Dim_DVP1","MD_Lac",
+    "GLCM_Contrast","GLCM_Dissimilarity","GLCM_Homogeneity","GLCM_Energy","GLCM_Correlation",
+    "GLCM_Entropy","GLCM_Variance","GLCM_Shade","GLCM_Prominence","GLCM_MaxProb",
+    "GLCM_Inertia","GLCM_AngSM","GLCM_IDM",
+    "Stat_Energy","Stat_Entropy",
+    "PyrDim_DPDM_NN","PyrDim_GPGM_NN","PyrDim_Blan_NN","PyrDim_Allo_NN","PyrDim_ID_NN","PyrDim_Kolm_NN",
+    "PyrDim_DPDM_Bilin","PyrDim_GPGM_Bilin","PyrDim_Blan_Bilin","PyrDim_Allo_Bilin","PyrDim_ID_Bilin","PyrDim_Kolm_Bilin",
+    "PyrDim_DPDM_Bicub","PyrDim_GPGM_Bicub","PyrDim_Blan_Bicub","PyrDim_Allo_Bicub","PyrDim_ID_Bicub","PyrDim_Kolm_Bicub",
+    "PyrDim_DPDM_Bicub2","PyrDim_GPGM_Bicub2","PyrDim_Blan_Bicub2","PyrDim_Allo_Bicub2","PyrDim_ID_Bicub2","PyrDim_Kolm_Bicub2",
+    "PyrDim_DPDM_Aver","PyrDim_GPGM_Aver","PyrDim_Blan_Aver","PyrDim_Allo_Aver","PyrDim_ID_Aver","PyrDim_Kolm_Aver",
+    "RGB_Hig_Diff_Kfold","RGB_Hig_Diff_Mult","RGB_Hig_Diff_SqD","RGB_Hig_Kfolf","RGB_Hig_Mult","RGB_Hig_SqD"
+]
+
+# --------- UTILS ----------
+def to_float01_gray_8bit(img):
+    arr = np.asarray(img)
+    if arr.ndim == 3:  # RGB/RGBA → gray
+        if arr.shape[0] in (3,4) and arr.shape[-1] not in (3,4):
+            arr = np.moveaxis(arr, 0, -1)
+        if arr.dtype != np.uint8:
+            arr = (arr.astype(np.float32) - arr.min()) / (arr.ptp() + 1e-12)
+            arr = (arr * 255).astype(np.uint8)
+        if arr.shape[-1] == 4:
+            arr = cv2.cvtColor(arr, cv2.COLOR_BGRA2GRAY)
+        else:
+            arr = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+    elif arr.ndim != 2:
+        raise ValueError(f"Unsupported array ndim={arr.ndim} for grayscale conversion.")
+    if arr.dtype != np.uint8:
+        arr = (arr.astype(np.float32) - arr.min()) / (arr.ptp() + 1e-12)
+        arr = (arr * 255).astype(np.uint8)
+    return (arr.astype(np.float32) / 255.0).clip(0.0, 1.0)
+
+def downsample_mask(mask, shape):
+    return cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]),
+                      interpolation=cv2.INTER_NEAREST).astype(bool)
+
+def safe_log(x):
+    return np.log(np.asarray(x, dtype=float) + 1e-12)
+
+def polyfit_safe(x, y):
+    if len(x) < 2 or len(y) < 2:
+        return 0.0
+    return float(np.polyfit(safe_log(np.asarray(x)), safe_log(np.asarray(y)), 1)[0])
+
+# --------- SUPER-ROBUST 2-D LOADER ----------
+def read_gray_2d(path):
+    """
+    Always returns a true 2-D grayscale float array.
+    1) Try tifffile
+    2) Reduce N-D → 2-D (max-project any leading dims, handle channel orders)
+    3) If still not 2-D, fall back to cv2
+    """
+    try:
+        with tifffile.TiffFile(path) as tf:
+            arr = tf.asarray()
+        arr = np.asarray(arr)
+
+        # Reduce ≥4D: max-project all leading dims except the last two
+        if arr.ndim >= 4:
+            lead_axes = tuple(range(arr.ndim - 2))
+            arr = arr.max(axis=lead_axes)
+
+        if arr.ndim == 3:
+            # channels-last
+            if arr.shape[-1] in (3,4):
+                return to_float01_gray_8bit(arr)
+            # channels-first
+            if arr.shape[0] in (3,4):
+                arr = np.moveaxis(arr, 0, -1)
+                return to_float01_gray_8bit(arr)
+            # Z-stack → max-projection
+            arr = arr.max(axis=0)
+
+        if arr.ndim == 2:
+            return (arr.astype(np.float32) - arr.min()) / (arr.ptp() + 1e-12)
+
+        # 1-D or weird → fall back
+        raise ValueError(f"tifffile produced ndim={arr.ndim}")
+
+    except Exception as e_tiff:
+        # cv2 fallback
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise ValueError(f"cv2 failed to read file: {e_tiff}")
+        if img.ndim == 2:
+            arr = img.astype(np.float32)
+        elif img.ndim == 3:
+            if img.shape[-1] == 4:
+                arr = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY).astype(np.float32)
+            else:
+                arr = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        else:
+            raise ValueError(f"cv2 produced unsupported ndim={img.ndim}")
+        return (arr - arr.min()) / (arr.ptp() + 1e-12)
+
+# --------- FEATURE PRIMITIVES (ROI-aware) ----------
+def partitioning_dimension(img, sizes=(4,8,16,32), mask=None):
+    img = np.asarray(img, float); H, W = img.shape
+    use_mask = mask is not None
+    if use_mask: mask = mask.astype(bool)
+    means, used = [], []
+    for s in sizes:
+        if s >= min(H, W): continue
+        local=[]
+        for i in range(0, H - s + 1, s):
+            for j in range(0, W - s + 1, s):
+                tile = img[i:i+s, j:j+s]
+                if use_mask:
+                    m = mask[i:i+s, j:j+s]
+                    if not np.any(m): continue
+                    v = tile[m]; 
+                    if v.size == 0: continue
+                    local.append(float(np.var(v)))
+                else:
+                    if not np.any(tile): continue
+                    local.append(float(np.var(tile)))
+        if local:
+            means.append(np.mean(local)); used.append(s)
+    return 0.0 if len(used)<2 else polyfit_safe(1.0/np.asarray(used), np.asarray(means)+1e-12)
+
+def cube_counting(img, sizes=(2,4,8,16,32), mask=None):
+    img = np.asarray(img, float); H, W = img.shape
+    use_mask = mask is not None
+    if use_mask: mask = mask.astype(bool)
+    counts, invs = [], []
+    for s in sizes:
+        if s >= min(H, W): continue
+        gh, gw = H//s, W//s
+        if gh < 1 or gw < 1: continue
+        small = cv2.resize(img, (gw, gh), interpolation=cv2.INTER_LINEAR)
+        if use_mask:
+            m_small = downsample_mask(mask, small.shape)
+            n = int(np.count_nonzero((small > 0) & m_small))
+        else:
+            n = int(np.count_nonzero(small > 0))
+        counts.append(n); invs.append(1.0/s)
+    return 0.0 if len(counts)<2 else polyfit_safe(np.asarray(invs), np.asarray(counts)+1e-12)
+
+def triangulation_dimension(img, scales=(4,8,16,32,64), max_pts=60_000, mask=None):
+    I = np.asarray(img, float); H, W = I.shape
+    use_mask = mask is not None
+    if use_mask: M = mask.astype(bool)
+    areas, invs = [], []
+    for s in scales:
+        ny, nx = H//s, W//s
+        if ny < 3 or nx < 3 or ny*nx > max_pts: continue
+        y, x = np.mgrid[0:H:s, 0:W:s]
+        z = I[0:H:s, 0:W:s]
+        if use_mask:
+            m = M[0:H:s, 0:W:s]
+            if not np.any(m): continue
+            xs, ys, zs = x[m].astype(float), y[m].astype(float), z[m].astype(float)
+        else:
+            xs, ys, zs = x.ravel().astype(float), y.ravel().astype(float), z.ravel().astype(float)
+        if xs.size < 3: continue
+        try:
+            tri = Delaunay(np.column_stack((xs, ys)))
+        except Exception:
+            continue
+        P = np.column_stack((xs, ys, zs))
+        area = 0.0
+        for simplex in tri.simplices:
+            a, b, c = P[simplex]
+            area += 0.5 * np.linalg.norm(np.cross(b - a, c - a))
+        areas.append(max(area, 1e-12)); invs.append(1.0/s)
+    return 0.0 if len(areas)<2 else polyfit_safe(np.asarray(invs), np.asarray(areas))
+
+# --------- FFT (ROI-masked, auto-downscale for heavy) ----------
+def _radial_average(power2d):
+    h, w = power2d.shape
+    cy, cx = h//2, w//2
+    y, x = np.ogrid[:h, :w]
+    r = np.sqrt((y - cy)**2 + (x - cx)**2).astype(np.int32)
+    max_r = r.max()
+    radial_sum = np.bincount(r.ravel(), weights=power2d.ravel(), minlength=max_r+1)
+    radial_cnt = np.bincount(r.ravel(), minlength=max_r+1)
+    prof = radial_sum / np.maximum(radial_cnt, 1)
+    return prof[1:]  # drop DC
+
+def _window2d(name, shape, gaussian_std_frac=0.15):
+    h, w = shape
+    if name.lower() in ("rectangular","rect"):
+        wy = np.ones(h, dtype=np.float32); wx = np.ones(w, dtype=np.float32)
+    elif name.lower() == "gaussian":
+        wy = get_window(("gaussian", max(1, int(h*gaussian_std_frac))), h, fftbins=False)
+        wx = get_window(("gaussian", max(1, int(w*gaussian_std_frac))), w, fftbins=False)
+    else:
+        mp = {"hanning":"hann","hann":"hann","bartlett":"bartlett","hamming":"hamming","blackman":"blackman","parzen":"parzen"}
+        base = mp.get(name.lower(), name.lower())
+        wy = get_window(base, h, fftbins=False); wx = get_window(base, w, fftbins=False)
+    win2d = np.outer(wy, wx).astype(np.float32)
+    rms = np.sqrt(np.mean(win2d**2)) or 1.0
+    return win2d / rms
+
+def fft_features(img, mask=None):
+    img = np.asarray(img, float)
+    if mask is not None:
+        img = img * mask.astype(float)
+    windows = ["Rectangular","Bartlett","Hamming","Hanning","Blackman","Gaussian","Parzen"]
+    feats = {}
+    h, w = img.shape
+    img_use = img
+    if MAX_SIDE_FOR_HEAVY and max(h, w) > MAX_SIDE_FOR_HEAVY:
+        scale = MAX_SIDE_FOR_HEAVY / float(max(h, w))
+        img_use = cv2.resize(img, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
+    for wname in windows:
+        win2d = _window2d(wname, img_use.shape)
+        iw = img_use * win2d
+        F = fftshift(fft2(iw))
+        power2d = (np.abs(F)**2).astype(np.float64) / img_use.size
+        prof = _radial_average(power2d)
+        k = np.arange(1, len(prof)+1, dtype=np.float64)
+        valid = (prof > 0)
+        if valid.sum() < 2:
+            slope, mlevel, integ = 0.0, float(prof.mean() if prof.size else 0.0), float(prof.sum())
+        else:
+            slope = float(np.polyfit(np.log(k[valid]), np.log(prof[valid]), 1)[0])
+            mlevel = float(np.mean(prof[valid]))
+            integ  = float(np.sum(prof[valid]))
+        feats[f"FFT_CA1_{wname}"] = slope
+        feats[f"FFT_MLS_{wname}"] = mlevel
+        feats[f"FFT_CA2_{wname}"] = integ
+    return feats
+
+# --------- TILE UTILITY ----------
+def _tile_vals(tile, m):
+    if m is not None:
+        if not np.any(m): return None
+        v = tile[m]
+        return v if v.size else None
+    return tile if np.any(tile) else None
+
+# --------- DBC FAMILY (ROI-aware) ----------
+def differential_box_counting_quantized(img01, sizes=(4,8,16,32), L=256, use_sum=True, mask=None):
+    img = np.clip(img01, 0, 1); H, W = img.shape
+    use_mask = mask is not None
+    if use_mask: mask = mask.astype(bool)
+    Y, X = [], []
+    for s in sizes:
+        if s >= min(H, W): continue
+        h = max(1, int(np.ceil(L / s)))
+        vals = []
+        for i in range(0, H - s + 1, s):
+            for j in range(0, W - s + 1, s):
+                tile = img[i:i+s, j:j+s]
+                m = mask[i:i+s, j:j+s] if use_mask else None
+                v = _tile_vals(tile, m)
+                if v is None: continue
+                Imin = int(np.floor(v.min() * (L-1)))
+                Imax = int(np.ceil (v.max() * (L-1)))
+                vals.append((Imax - Imin) // h + 1)
+        if not vals: continue
+        Y.append(np.sum(vals) if use_sum else np.mean(vals)); X.append(1.0 / s)
+    return 0.0 if len(Y)<2 else polyfit_safe(np.asarray(X), np.asarray(Y)+1e-12)
+
+def relative_differential_box_counting(img, sizes=(4,8,16,32), use_sum=True, mask=None):
+    H, W = img.shape
+    use_mask = mask is not None
+    if use_mask: mask = mask.astype(bool)
+    Y, X = [], []
+    for s in sizes:
+        if s >= min(H, W): continue
+        vals = []
+        for i in range(0, H - s + 1, s):
+            for j in range(0, W - s + 1, s):
+                tile = img[i:i+s, j:j+s]
+                m = mask[i:i+s, j:j+s] if use_mask else None
+                v = _tile_vals(tile, m)
+                if v is None: continue
+                Imin = float(v.min()); Imax = float(v.max())
+                vals.append((Imax - Imin) / (Imax + Imin + 1e-12))
+        if not vals: continue
+        Y.append(np.sum(vals) if use_sum else np.mean(vals)); X.append(1.0 / s)
+    return 0.0 if len(Y)<2 else polyfit_safe(np.asarray(X), np.asarray(Y)+1e-12)
+
+def sasaki_dbc_dimension(img, sizes=(4,8,16,32), alpha=0.5, use_sum=True, mask=None):
+    H, W = img.shape
+    gx = sobel(img, axis=1); gy = sobel(img, axis=0)
+    grad = np.hypot(gx, gy)
+    gnorm = np.clip(grad / (np.percentile(grad, 99.0) + 1e-12), 0.0, 1.0)
+    use_mask = mask is not None
+    if use_mask: mask = mask.astype(bool)
+    Y, X = [], []
+    for s in sizes:
+        if s >= min(H, W): continue
+        vals = []
+        for i in range(0, H - s + 1, s):
+            for j in range(0, W - s + 1, s):
+                tile = img[i:i+s, j:j+s]
+                m = mask[i:i+s, j:j+s] if use_mask else None
+                v = _tile_vals(tile, m)
+                if v is None: continue
+                dI = float(v.max() - v.min())
+                gmean = float(gnorm[i:i+s, j:j+s][m].mean() if use_mask else gnorm[i:i+s, j:j+s].mean())
+                vals.append(dI + alpha * gmean)
+        if not vals: continue
+        Y.append(np.sum(vals) if use_sum else np.mean(vals)); X.append(1.0 / s)
+    return 0.0 if len(Y)<2 else polyfit_safe(np.asarray(X), np.asarray(Y)+1e-12)
+
+# --------- CORRELATION DIMENSIONS ----------
+def correlation_dimension_gp(img, radii=None, max_points=5000):
+    coords = np.argwhere(img > 0)
+    N = len(coords)
+    if N < 3: return 0.0
+    if N > max_points:
+        sel = np.random.choice(N, size=max_points, replace=False)
+        coords = coords[sel]; N = len(coords)
+    if radii is None:
+        rmax = max(2.0, 0.25 * min(img.shape))
+        radii = np.geomspace(1.0, rmax, 10)
+    tree = cKDTree(coords.astype(np.float64))
+    Cr = []
+    for r in radii:
+        counts = tree.query_ball_point(coords, r, return_length=True) - 1
+        Cr.append(counts.sum() / (N * (N - 1) + 1e-12))
+    y = np.array(Cr, float); k = np.array(radii, float)
+    valid = (y > 0)
+    if valid.sum() < 2: return 0.0
+    return float(np.polyfit(np.log(k[valid]), np.log(y[valid]), 1)[0])
+
+def _pairwise_within_r(coords, rmax):
+    tree = cKDTree(coords)
+    pairs = list(tree.query_pairs(rmax))
+    if len(pairs) == 0:
+        return np.zeros((0,2), dtype=int)
+    return np.array(pairs, dtype=int)
+
+def directional_correlation_dimension(img, mode="hv", radii=None, angle_tol_deg=10, max_points=5000):
+    coords = np.argwhere(img > 0)
+    N = len(coords)
+    if N < 3: return 0.0
+    if N > max_points:
+        sel = np.random.choice(N, size=max_points, replace=False)
+        coords = coords[sel]; N = len(coords)
+    if radii is None:
+        rmax = max(2.0, 0.25 * min(img.shape))
+        radii = np.geomspace(1.0, rmax, 10)
+    rmax = radii.max()
+    pairs = _pairwise_within_r(coords.astype(np.float64), rmax)
+    if pairs.shape[0] == 0:
+        return 0.0
+    d = coords[pairs[:,1]] - coords[pairs[:,0]]
+    dist = np.hypot(d[:,0], d[:,1]) + 1e-12
+    ang  = (np.degrees(np.arctan2(d[:,0], d[:,1])) + 360.0) % 180.0
+
+    def slope_for_wedge(target_deg):
+        tol = angle_tol_deg
+        m = (np.abs(((ang - target_deg + 90) % 180) - 90) <= tol)
+        if m.sum() < 5: return None
+        Cr = [np.mean(dist[m] <= r) for r in radii]
+        Cr = np.clip(np.array(Cr, float), 1e-12, 1.0)
+        ok = Cr > 0
+        if ok.sum() < 2: return None
+        return float(np.polyfit(np.log(radii[ok]), np.log(Cr[ok]), 1)[0])
+
+    if mode == "hv":
+        vals = [s for s in (slope_for_wedge(0.0), slope_for_wedge(90.0)) if s is not None]
+        return float(np.mean(vals)) if vals else 0.0
+    if mode == "rad4":
+        targets = [0.0, 45.0, 90.0, 135.0]
+        vals = [slope_for_wedge(t) for t in targets if slope_for_wedge(t) is not None]
+        return float(np.mean(vals)) if vals else 0.0
+    return correlation_dimension_gp(img, radii=radii, max_points=max_points)
+
+# --------- HIGUCHI 1D + FAI ----------
+def higuchi_1d_signal(sig, kmax=10):
+    sig = np.asarray(sig, dtype=float).ravel()
+    n = sig.size
+    if n < 3: return 0.0
+    kmax = int(max(2, min(kmax, n // 2)))
+    ks = np.arange(1, kmax + 1)
+    Lk = np.empty_like(ks, dtype=float)
+    for i, k in enumerate(ks):
+        segs = [np.abs(np.diff(sig[m::k])).mean() for m in range(k) if sig[m::k].size > 1]
+        Lk[i] = np.mean(segs) if segs else 0.0
+    mask = Lk > 0
+    if mask.sum() < 2: return 0.0
+    x = np.log(1.0 / ks[mask] + 1e-12); y = np.log(Lk[mask] + 1e-12)
+    return float(np.polyfit(x, y, 1)[0])
+
+def sample_line_nn(img, y0, x0, y1, x1, n=None):
+    if n is None:
+        n = int(np.hypot(y1 - y0, x1 - x0)) + 1
+    ys = np.clip(np.rint(np.linspace(y0, y1, n)), 0, img.shape[0]-1).astype(int)
+    xs = np.clip(np.rint(np.linspace(x0, x1, n)), 0, img.shape[1]-1).astype(int
+    )
+    return img[ys, xs]
+
+def radial_profiles(img, angles_deg):
+    h, w = img.shape
+    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+    rmax = 0.5 * np.sqrt(h*h + w*w)
+    profiles = []
+    for a in angles_deg:
+        th = np.deg2rad(a)
+        dy, dx = np.sin(th), np.cos(th)
+        y0, x0 = cy - rmax * dy, cx - rmax * dx
+        y1, x1 = cy + rmax * dy, cx + rmax * dx
+        profiles.append(sample_line_nn(img, y0, x0, y1, x1))
+    return profiles
+
+def higuchi_1d(img, mode="meander"):
+    """
+    If given a 2-D image, build a 1-D profile per `mode` then compute Higuchi.
+    If given a 1-D array (e.g., a row/column profile), compute Higuchi directly.
+    """
+    arr = np.asarray(img)
+    # NEW: handle 1-D inputs robustly
+    if arr.ndim == 1:
+        return higuchi_1d_signal(arr)
+
+    rows = arr.mean(1)
+    cols = arr.mean(0)
+
+    if mode == "single":
+        prof = rows
+    elif mode == "meander":
+        prof = np.concatenate([rows, cols])
+    elif mode == "meanrc":
+        if len(rows) != len(cols):
+            cols_resampled = np.interp(np.linspace(0, len(cols) - 1, len(rows)),
+                                       np.arange(len(cols)), cols)
+        else:
+            cols_resampled = cols
+        prof = 0.5 * (rows + cols_resampled)
+    elif mode == "4rl":
+        prof = np.concatenate([arr[0, :], arr[-1, :], arr[:, 0], arr[:, -1]])
+    elif mode == "180rl":
+        rad180 = radial_profiles(arr, np.arange(180))
+        prof = np.concatenate([p for p in rad180 if p.size > 1]) if len(rad180) > 0 else rows
+    else:
+        prof = rows
+
+    return higuchi_1d_signal(prof)
+
+def fai(img):
+    return float(abs(higuchi_1d(img, "single") - higuchi_1d(img, "meander")))
+
+# --------- HIGUCHI 2D VARIANTS ----------
+def _higuchi2d_surface_measures(img, kmax=10, variant="kfold"):
+    I = np.asarray(img, np.float64); H, W = I.shape
+    ks = np.arange(1, kmax + 1, dtype=int)
+    Lk = []
+    for k in ks:
+        if H <= k or W <= k: break
+        dx  = np.abs(I[:, k:]   - I[:, :-k])
+        dy  = np.abs(I[k:, :]   - I[:-k, :])
+        dxy = np.abs(I[k:, k:]  - I[:-k, :-k])
+        if variant == "kfold":
+            val = k * (dx.mean() + dy.mean() + dxy.mean())
+        elif variant == "mult1":
+            h = min(dx.shape[0], dy.shape[0]); w = min(dx.shape[1], dy.shape[1])
+            val = (dx[:h, :w] * dy[:h, :w]).mean()
+        elif variant == "mult2":
+            h = min(dxy.shape[0], dx.shape[0], dy.shape[0]); w = min(dxy.shape[1], dx.shape[1], dy.shape[1])
+            val = (dxy[:h, :w] * (0.5 * (dx[:h, :w] + dy[:h, :w]))).mean()
+        elif variant in ("sqd", "squared"):
+            val = (dx**2).mean() + (dy**2).mean() + (dxy**2).mean()
+        elif variant == "direct":
+            val = 0.5 * (dx.mean() + dy.mean())
+        elif variant == "triangle":
+            tri = np.abs(I[k:, k:] + I[:-k, :-k] - I[k:, :-k] - I[:-k, k:])
+            val = tri.mean()
+        else:
+            val = (dx**2).mean() + (dy**2).mean() + (dxy**2).mean()
+        Lk.append(val + 1e-12)
+    return ks[:len(Lk)], np.asarray(Lk, np.float64)
+
+def _higuchi2d_slope_from_Lk(ks, Lk):
+    if len(Lk) < 2: return 0.0
+    x = np.log(1.0 / ks.astype(np.float64)); y = np.log(Lk)
+    return float(np.polyfit(x, y, 1)[0])
+
+def higuchi_2d(img, kmax=10, variant="direct"):
+    ks, Lk = _higuchi2d_surface_measures(img, kmax=kmax, variant=variant if variant!="sqd" else "squared")
+    return _higuchi2d_slope_from_Lk(ks, Lk)
+
+# --------- LACUNARITY ----------
+def fraclac_lacunarity(img, box_sizes=(4,8,16,32), mode="raster", mask=None):
+    img = np.asarray(img, float); H, W = img.shape
+    use_mask = mask is not None
+    if use_mask: mask = mask.astype(bool)
+    results = []
+    for s in box_sizes:
+        if s >= min(H, W): continue
+        masses = []
+        if mode == "raster":
+            for oy in range(s):
+                for ox in range(s):
+                    y_end = H - (H - oy) % s
+                    x_end = W - (W - ox) % s
+                    for y in range(oy, y_end, s):
+                        for x in range(ox, x_end, s):
+                            tile = img[y:y+s, x:x+s]
+                            m = mask[y:y+s, x:x+s] if use_mask else None
+                            v = _tile_vals(tile, m)
+                            if v is None: continue
+                            masses.append(v.sum())
+        else:
+            for y in range(0, H - s + 1):
+                for x in range(0, W - s + 1):
+                    tile = img[y:y+s, x:x+s]
+                    m = mask[y:y+s, x:x+s] if use_mask else None
+                    v = _tile_vals(tile, m)
+                    if v is None: continue
+                    masses.append(v.sum())
+        if len(masses) < 2: continue
+        masses = np.array(masses, float)
+        mu, var = masses.mean(), masses.var()
+        lam = var / (mu*mu + 1e-12)
+        results.append((1.0/s, lam))
+    if len(results) < 2: return 0.0
+    inv_s, lam_vals = zip(*results)
+    return float(np.polyfit(np.log(inv_s), np.log(lam_vals), 1)[0])
+
+def lacunarity_features(img, mask=None):
+    return {
+        "RP_Lacunarity": fraclac_lacunarity(img, mode="raster",  mask=mask),
+        "SV_Lacunarity": fraclac_lacunarity(img, mode="sliding", mask=mask),
+    }
+
+# --------- STRICT FRACLAC-STYLE BOX COUNTING ----------
+def _fraclac_binary(img01):
+    return (np.asarray(img01, float) > 0)
+
+def _boxes_raster(binary, s, oy, ox):
+    H, W = binary.shape
+    ys = range(oy, H - (H - oy) % s, s)
+    xs = range(ox, W - (W - ox) % s, s)
+    for y in ys:
+        for x in xs:
+            yield binary[y:y+s, x:x+s]
+
+def _boxes_sliding(binary, s):
+    H, W = binary.shape
+    for y in range(0, H - s + 1):
+        for x in range(0, W - s + 1):
+            yield binary[y:y+s, x:x+s]
+
+def _fraclac_metrics_for_mode(binary, sizes, mode):
+    invs = []; Nocc=[]; VarM=[]; MeanM=[]
+    for s in sizes:
+        if s < 2 or s > min(binary.shape): continue
+        masses = []
+        if mode == "raster":
+            for oy in range(s):
+                for ox in range(s):
+                    masses.extend(int(t.sum()) for t in _boxes_raster(binary, s, oy, ox))
+        elif mode == "sliding":
+            masses.extend(int(t.sum()) for t in _boxes_sliding(binary, s))
+        else:
+            raise ValueError("mode must be 'raster' or 'sliding'")
+        masses = np.asarray(masses, float)
+        if masses.size == 0: continue
+        invs.append(1.0 / s)
+        Nocc.append(float(np.count_nonzero(masses > 0)))
+        VarM.append(float(masses.var() + 1e-12))
+        MeanM.append(float(masses.mean()))
+    if len(invs) < 2: return 0.0, 0.0, 0.0
+    invs = np.asarray(invs, float)
+    Nocc = np.asarray(Nocc, float)
+    VarM = np.asarray(VarM, float)
+    MeanM = np.asarray(MeanM, float)
+    differ = float(np.polyfit(np.log(invs), np.log(np.maximum(Nocc, 1e-12)), 1)[0]) if (Nocc > 0).sum() >= 2 else 0.0
+    dvv    = float(np.polyfit(np.log(invs), np.log(np.maximum(VarM, 1e-12)), 1)[0]) if (VarM > 0).sum() >= 2 else 0.0
+    dvp1   = float(np.polyfit(np.log(invs), np.log(MeanM + 1.0 + 1e-12), 1)[0]) if MeanM.size >= 2 else 0.0
+    return differ, dvv, dvp1
+
+def fraclac_strict(img01, sizes=(4,8,16,32,64)):
+    B = _fraclac_binary(img01)
+    differ_r, dvv_r, dvp1_r = _fraclac_metrics_for_mode(B, sizes, mode="raster")
+    differ_s, dvv_s, dvp1_s = _fraclac_metrics_for_mode(B, sizes, mode="sliding")
+
+    def slope(pairs):
+        if len(pairs) < 2: return 0.0
+        x = np.log([p[0] for p in pairs]); y = np.log([p[1] for p in pairs])
+        return float(np.polyfit(x, y, 1)[0])
+
+    # Local variants (medians across origins / positions)
+    def _local(binary, sizes, mode):
+        diffs, dvvs, dvp1s = [], [], []
+        if mode == "raster":
+            for s in sizes:
+                if s < 2 or s > min(binary.shape): continue
+                inv = 1.0 / s
+                nocc_list, var_list, mean_list = [], [], []
+                for oy in range(s):
+                    for ox in range(s):
+                        masses = [int(t.sum()) for t in _boxes_raster(binary, s, oy, ox)]
+                        if len(masses) == 0: continue
+                        masses = np.asarray(masses, float)
+                        nocc_list.append(float(np.count_nonzero(masses > 0)))
+                        var_list.append(float(masses.var() + 1e-12))
+                        mean_list.append(float(masses.mean()))
+                if not nocc_list: continue
+                diffs.append((inv, float(np.median(nocc_list))))
+                dvvs.append((inv, float(np.median(var_list))))
+                dvp1s.append((inv, float(np.median(np.asarray(mean_list) + 1.0))))
+        else:
+            for s in sizes:
+                if s < 2 or s > min(binary.shape): continue
+                inv = 1.0 / s
+                masses = [int(t.sum()) for t in _boxes_sliding(binary, s)]
+                if len(masses) == 0: continue
+                masses = np.asarray(masses, float)
+                diffs.append((inv, float(np.count_nonzero(masses > 0))))
+                dvvs.append((inv, float(np.median((masses - masses.mean())**2) + 1e-12)))
+                dvp1s.append((inv, float(masses.mean() + 1.0)))
+        return slope(diffs), slope(dvvs), slope(dvp1s)
+
+    differ_lr, dvv_lr, dvp1_lr = _local(B, sizes, "raster")
+    differ_ls, dvv_ls, dvp1_ls = _local(B, sizes, "sliding")
+
+    return {
+        "FLBC_Differ": differ_r, "FLBC_DVV": dvv_r, "FLBC_DVP1": dvp1_r,
+        "FLLBC_Differ": differ_lr, "FLLBC_DVV": dvv_lr, "FLLBC_DVP1": dvp1_lr,
+        "FLSB_Differ": differ_s, "FLSB_DVV": dvv_s, "FLSB_DVP1": dvp1_s,
+        "FLSBL_Differ": differ_ls, "FLSBL_DVV": dvv_ls, "FLSBL_DVP1": dvp1_ls,
+    }
+
+# --------- MASS vs DISTANCE (strict binary) ----------
+def md_dim_dvp1_binary(img, n_r=12, r_min=1.0, r_max_frac=0.45):
+    B = (np.asarray(img, float) > 0)
+    coords = np.argwhere(B)
+    if coords.shape[0] < 2: return 0.0
+    cy, cx = coords.mean(0)
+    yy, xx = np.mgrid[0:B.shape[0], 0:B.shape[1]]
+    dmap = np.hypot(yy - cy, xx - cx)
+    r_max = max(2.0, r_max_frac * min(B.shape))
+    rads = np.geomspace(max(1.0, r_min), r_max, n_r)
+    d_sorted = np.sort(dmap[B])
+    M = []
+    for r in rads:
+        k = np.searchsorted(d_sorted, r, side="right")
+        M.append(float(k))
+    M = np.asarray(M, float)
+    if M.size < 2: return 0.0
+    return float(np.polyfit(np.log(rads), np.log(M + 1.0), 1)[0])
+
+def md_lacunarity_binary(img, n_r=12, r_min=3.0, r_max_frac=0.45):
+    B = (np.asarray(img, float) > 0)
+    coords = np.argwhere(B)
+    if coords.shape[0] < 2: return 0.0
+    cy, cx = coords.mean(0)
+    yy, xx = np.mgrid[0:B.shape[0], 0:B.shape[1]]
+    dmap = np.hypot(yy - cy, xx - cx)
+    r_max = max(4.0, r_max_frac * min(B.shape))
+    edges = np.geomspace(max(1.0, r_min), r_max, n_r+1)
+    shell_vals, shell_r = [], []
+    for i in range(n_r):
+        r0, r1 = edges[i], edges[i+1]
+        m = (dmap >= r0) & (dmap < r1)
+        vals = B[m].astype(float)
+        if vals.size < 2: continue
+        mu = float(vals.mean()); var = float(vals.var())
+        lam = var / (mu*mu + 1e-12)
+        shell_vals.append(lam); shell_r.append(np.sqrt(r0*r1))
+    if len(shell_vals) < 2: return 0.0
+    shell_vals = np.asarray(shell_vals, float); shell_r = np.asarray(shell_r, float)
+    return float(np.polyfit(np.log(shell_r), np.log(shell_vals + 1e-12), 1)[0])
+
+def mass_vs_distance_strict(img):
+    return {"MD_Dim_DVP1": md_dim_dvp1_binary(img), "MD_Lac": md_lacunarity_binary(img)}
+
+# --------- GLCM (ROI-masked; no external entropy()) ----------
+def _glcm_masked(img01, mask, levels=32, distances=(1,), angles=(0, np.pi/4, np.pi/2, 3*np.pi/4)):
+    imgq = np.clip((img01 * (levels - 1)).round(), 0, levels - 1).astype(np.uint8)
+    H, W = imgq.shape
+    M = mask.astype(bool)
+
+    def angle_to_offset(theta):
+        ct, st = np.cos(theta), np.sin(theta)
+        dx = int(np.round(ct)); dy = int(np.round(st))
+        return dy, dx
+
+    P_sum = np.zeros((levels, levels), dtype=np.float64)
+    any_pairs = False
+    for d in distances:
+        for theta in angles:
+            dy, dx = angle_to_offset(theta)
+            dy *= d; dx *= d
+            y0 = max(0, -dy); y1 = min(H, H - dy)
+            x0 = max(0, -dx); x1 = min(W, W - dx)
+            if y1 - y0 <= 0 or x1 - x0 <= 0: continue
+            A = imgq[y0:y1, x0:x1]; B = imgq[y0+dy:y1+dy, x0+dx:x1+dx]
+            M1 = M[y0:y1, x0:x1];   M2 = M[y0+dy:y1+dy, x0+dx:x1+dx]
+            valid = M1 & M2
+            if not np.any(valid): continue
+            any_pairs = True
+            a = A[valid].ravel(); b = B[valid].ravel()
+            P = np.zeros((levels, levels), dtype=np.float64)
+            np.add.at(P, (a, b), 1.0)
+            P_sum += P
+
+    if not any_pairs:
+        return P_sum  # all zeros
+    s = P_sum.sum()
+    if s <= 0:
+        return P_sum
+    return P_sum / s
+
+def glcm_features(img01, mask, levels=32, distances=(1,), angles=(0, np.pi/4, np.pi/2, 3*np.pi/4)):
+    P = _glcm_masked(img01, mask, levels=levels, distances=distances, angles=angles)
+    if P.sum() <= 0:
+        # Return zeros, avoids NameError/NaNs
+        return {k:0.0 for k in [
+            "GLCM_AngSM","GLCM_IDM","GLCM_Contrast","GLCM_Energy","GLCM_Entropy","GLCM_Homogeneity",
+            "GLCM_Variance","GLCM_Shade","GLCM_Prominence","GLCM_Inertia","GLCM_Correlation",
+            "GLCM_Dissimilarity","GLCM_MaxProb"
+        ]}
+    I, J = np.meshgrid(np.arange(levels), np.arange(levels), indexing="ij")
+    px = P.sum(axis=1); py = P.sum(axis=0)
+    mux = (px * np.arange(levels)).sum()
+    muy = (py * np.arange(levels)).sum()
+    sigx = np.sqrt(((np.arange(levels) - mux) ** 2 * px).sum())
+    sigy = np.sqrt(((np.arange(levels) - muy) ** 2 * py).sum())
+
+    diff = I - J; sum_ij = I + J
+    asm   = (P**2).sum()
+    ent   = float(-np.sum(P * (np.log(P + 1e-12))))  # no external entropy()
+    idm   = float((P / (1.0 + diff**2)).sum())
+    contr = float(((diff**2) * P).sum())
+    var_x = ((np.arange(levels) - mux)**2 * px).sum()
+    var_y = ((np.arange(levels) - muy)**2 * py).sum()
+    var   = float(0.5 * (var_x + var_y))
+    shade = float((((sum_ij - (mux + muy))**3) * P).sum())
+    prom  = float((((sum_ij - (mux + muy))**4) * P).sum())
+    corr  = float((((I - mux) * (J - muy) * P).sum()) / (sigx * sigy)) if (sigx>0 and sigy>0) else 1.0
+    dissim   = float((np.abs(diff) * P).sum())
+    maxprob  = float(P.max())
+
+    return {
+        "GLCM_AngSM": float(asm),
+        "GLCM_IDM": float(idm),
+        "GLCM_Contrast": float(contr),
+        "GLCM_Energy": float(asm),
+        "GLCM_Entropy": float(ent),
+        "GLCM_Homogeneity": float(idm),
+        "GLCM_Variance": float(var),
+        "GLCM_Shade": float(shade),
+        "GLCM_Prominence": float(prom),
+        "GLCM_Inertia": float(contr),
+        "GLCM_Correlation": float(corr),
+        "GLCM_Dissimilarity": float(dissim),
+        "GLCM_MaxProb": float(maxprob),
+    }
+
+# --------- BASIC STATS ----------
+def stats(img01, mask=None):
+    if mask is not None:
+        v = img01[mask]
+        if v.size == 0: return {"Stat_Energy": 0.0, "Stat_Entropy": 0.0}
+        return {"Stat_Energy": float(np.sum(v**2)), "Stat_Entropy": float(shannon_entropy(v))}
+    return {"Stat_Energy": float(np.sum(img01**2)), "Stat_Entropy": float(shannon_entropy(img01))}
+
+# --------- PYRAMID (ROI-masked) ----------
+def _downsample_levels(img, order, max_levels=5):
+    levels = [img]
+    for _ in range(1, max_levels):
+        h, w = levels[-1].shape
+        if min(h, w) < 16: break
+        levels.append(resize(levels[-1], (h//2, w//2), order=order, anti_aliasing=True, preserve_range=True))
+    return levels
+
+def _downsample_masks(mask, shapes):
+    ms = [mask]
+    for i in range(1, len(shapes)):
+        ms.append(downsample_mask(ms[-1], shapes[i]))
+    return ms
+
+def _log_slope(x, y):
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    m = (x > 0) & (y > 0)
+    if m.sum() < 2: return 0.0
+    return float(np.polyfit(np.log(x[m]), np.log(y[m]), 1)[0])
+
+def pyramid_features(img01, mask=None):
+    feats = {}
+    interps = {"NN": 0, "Bilin": 1, "Bicub": 3, "Bicub2": 3, "Aver": 1}
+    base = np.clip(img01, 0, 1)
+    M = mask.astype(bool) if mask is not None else (base > 0)
+    try:
+        thr = float(threshold_otsu(base[M])) if np.any(M) else 0.5
+    except Exception:
+        thr = 0.5
+
+    for name, order in interps.items():
+        levels = _downsample_levels(base, order)
+        shapes = [L.shape for L in levels]
+        masks  = _downsample_masks(M, shapes)
+        if len(levels) < 2:
+            for key in [f"PyrDim_DPDM_{name}", f"PyrDim_GPGM_{name}", f"PyrDim_Blan_{name}",
+                        f"PyrDim_Allo_{name}", f"PyrDim_ID_{name}", f"PyrDim_Kolm_{name}"]:
+                feats[key] = 0.0
+            continue
+
+        scales = [float(2**i) for i in range(len(levels))]
+
+        dpdm_vals = []
+        for L, Mm in zip(levels, masks):
+            dx = np.abs(np.diff(L, axis=1)); dy = np.abs(np.diff(L, axis=0))
+            Mx = Mm[:,1:] & Mm[:,:-1]; My = Mm[1:,:] & Mm[:-1,:]
+            v = (dx[Mx].mean() if np.any(Mx) else 0.0) + (dy[My].mean() if np.any(My) else 0.0)
+            dpdm_vals.append(v + 1e-12)
+        feats[f"PyrDim_DPDM_{name}"] = _log_slope(scales, dpdm_vals)
+
+        pgm_vals = []
+        for L, Mm in zip(levels, masks):
+            gx = sobel(L, axis=1); gy = sobel(L, axis=0)
+            g = np.hypot(gx, gy)
+            pgm_vals.append(g[Mm].mean() + 1e-12 if np.any(Mm) else 0.0)
+        feats[f"PyrDim_GPGM_{name}"] = _log_slope(scales, pgm_vals)
+
+        bln_vals = []
+        for L, Mm in zip(levels, masks):
+            if not np.any(Mm): bln_vals.append(0.0); continue
+            h, w = L.shape
+            r = max(1, int(round(0.01 * min(h, w))))
+            se = disk(r)
+            u8 = np.clip(L * 255, 0, 255).astype(np.uint8)
+            bl = (dilation(u8, se).astype(np.float32) - erosion(u8, se))
+            bln_vals.append(bl[Mm].mean() + 1e-12)
+        feats[f"PyrDim_Blan_{name}"] = _log_slope(scales, bln_vals)
+
+        allo_vals = []
+        for L, Mm in zip(levels, masks):
+            allo_vals.append(float((L[Mm] > thr).sum() + 1e-12))
+        feats[f"PyrDim_Allo_{name}"] = _log_slope(scales, allo_vals)
+
+        id_vals = []
+        for L, Mm in zip(levels, masks):
+            if not np.any(Mm): id_vals.append(0.0); continue
+            counts, _ = histogram(np.clip(L[Mm], 0, 1), nbins=32)
+            p = counts.astype(np.float64); p = p / (p.sum() + 1e-12)
+            id_vals.append(float(-(p * np.log(p + 1e-12)).sum()) + 1e-12)
+        feats[f"PyrDim_ID_{name}"] = _log_slope(scales, id_vals)
+
+        kolm_vals = []
+        for L, Mm in zip(levels, masks):
+            if not np.any(Mm): kolm_vals.append(0.0); continue
+            ys, xs = np.where(Mm)
+            y0,y1,x0,x1 = ys.min(), ys.max()+1, xs.min(), xs.max()+1
+            u8 = np.clip((L[y0:y1, x0:x1]) * 255, 0, 255).astype(np.uint8)
+            bytes_len = len(cv2.imencode(".png", u8)[1].tobytes())
+            kolm_vals.append(float(bytes_len) + 1e-12)
+        feats[f"PyrDim_Kolm_{name}"] = _log_slope(scales, kolm_vals)
+
+    return feats
+
+# --------- COMPLEXITY ----------
+def nkc(img32):
+    arr = np.asarray(img32, np.float32)
+    arr = (arr - np.min(arr)) / (np.ptp(arr) + 1e-12)
+    arr8 = np.rint(arr * 255).astype(np.uint8)
+    raw = arr8.tobytes()
+    uncompressed = max(len(raw), 1)
+    nkc_zlib = len(zlib.compress(raw)) / uncompressed
+    nkc_gzip = len(gzip.compress(raw)) / uncompressed
+    return {"NKC_ZIP": float(nkc_zlib), "NKS_ZLIB": float(nkc_zlib), "NKS_GZIP": float(nkc_gzip)}
+
+def rgb_kc(img01):
+    rgb = np.stack([img01, img01, img01], axis=-1)
+    rgbu8 = np.clip(rgb * 255, 0, 255).astype(np.uint8)
+    raw = rgbu8.tobytes()
+    uncompressed = max(len(raw), 1)
+    return {
+        "RGB_KC_PNG": len(cv2.imencode(".png", rgbu8)[1].tobytes()) / uncompressed,
+        "RGB_KC_ZIP": len(zlib.compress(raw)) / uncompressed,
+    }
+
+# --------- RGB HIGUCHI (grayscale tripled) ----------
+def rgb_higuchi(img01, kmax=10):
+    arr = np.asarray(img01, np.float64)
+    chans = [arr, arr, arr]
+    def slope_for_variant(variant):
+        vals = []
+        for c in chans:
+            ks, Lk = _higuchi2d_surface_measures(c, kmax=kmax, variant=variant)
+            vals.append(_higuchi2d_slope_from_Lk(ks, Lk) if len(ks)>=2 else 0.0)
+        return float(np.mean(vals)) if vals else 0.0
+    diff_kfold = slope_for_variant("kfold")
+    diff_sqd   = slope_for_variant("sqd")
+    diff_mult1 = slope_for_variant("mult1")
+    diff_mult2 = slope_for_variant("mult2")
+    diff_mult  = 0.5 * (diff_mult1 + diff_mult2)
+    return {
+        "RGB_Hig_Diff_Kfold": diff_kfold,
+        "RGB_Hig_Diff_Mult":  diff_mult,
+        "RGB_Hig_Diff_SqD":   diff_sqd,
+        "RGB_Hig_Kfold":      diff_kfold,
+        "RGB_Hig_Mult":       diff_mult,
+        "RGB_Hig_SqD":        diff_sqd,
+    }
+
+# --------- MASS RADIUS (intensity-weighted center) ----------
+def mass_radius(img, n_r=12, r_min=1.0, r_max_frac=0.45, intensity_weighted=True):
+    img = np.asarray(img, np.float64)
+    H, W = img.shape
+    if intensity_weighted and img.max() > 0:
+        yy, xx = np.mgrid[0:H, 0:W]; tot = img.sum()
+        cy = float((yy * img).sum() / (tot + 1e-12))
+        cx = float((xx * img).sum() / (tot + 1e-12))
+        field = img
+    else:
+        coords = np.argwhere(img > 0)
+        if len(coords) < 2: return 0.0
+        cy, cx = coords.mean(0); field = (img > 0).astype(np.float64)
+    yy, xx = np.mgrid[0:H, 0:W]
+    dmap = np.hypot(yy - cy, xx - cx)
+    r_max = max(2.0, r_max_frac * min(H, W))
+    rads = np.geomspace(max(1.0, r_min), r_max, n_r)
+    flat_d = dmap.ravel(); flat_m = field.ravel()
+    order = np.argsort(flat_d)
+    d_sorted = flat_d[order]; m_sorted = flat_m[order]
+    csum = np.cumsum(m_sorted)
+    M = []
+    for r in rads:
+        kidx = np.searchsorted(d_sorted, r, side="right") - 1
+        M.append(0.0 if kidx < 0 else float(csum[kidx]))
+    M = np.asarray(M) + 1e-12
+    return float(np.polyfit(np.log(rads), np.log(M), 1)[0])
+
+# --------- MINKOWSKI ----------
+def minkowski_dimension(img, radii=(1,2,4,8,16), shape="disk"):
+    I = np.asarray(img, float)
+    I = (I - I.min()) / (I.max() - I.min() + 1e-12)
+    Iu8 = np.clip(I * 255, 0, 255).astype(np.uint8)
+    vols = []
+    for r in radii:
+        if shape == "square": selem = square(2*r + 1).astype(np.uint8)
+        elif shape == "diamond": selem = diamond(r).astype(np.uint8)
+        else: selem = disk(r).astype(np.uint8)
+        dil = cv2.dilate(Iu8, selem); ero = cv2.erode(Iu8, selem)
+        vols.append(float((dil.astype(np.float32) - ero.astype(np.float32)).sum()) + 1e-12)
+    if len(vols) < 2: return 0.0
+    return float(np.polyfit(np.log(radii), np.log(vols), 1)[0])
+
+def minkowski_variants(img):
+    def minkowski_dim_oriented(I, radii, orient):
+        I = np.asarray(I, float)
+        I = (I - I.min()) / (I.max() - I.min() + 1e-12)
+        Iu8 = np.clip(I * 255, 0, 255).astype(np.uint8)
+        vols = []
+        for r in radii:
+            if orient == "hor":
+                selem = np.ones((1, 2*r+1), np.uint8)
+            elif orient == "vert":
+                selem = np.ones((2*r+1, 1), np.uint8)
+            else:
+                selem = disk(r).astype(np.uint8)
+            dil = cv2.dilate(Iu8, selem); ero = cv2.erode(Iu8, selem)
+            vols.append(float((dil.astype(np.float32) - ero.astype(np.float32)).sum()) + 1e-12)
+        if len(vols) < 2: return 0.0
+        return float(np.polyfit(np.log(radii), np.log(vols), 1)[0])
+
+    radii=(1,2,4,8,16)
+    return {
+        "Mink_Blan_Sq":   minkowski_dimension(img, shape="square"),
+        "Mink_Blan_Disk": minkowski_dimension(img, shape="disk"),
+        "Mink_Blan_Diamond": minkowski_dimension(img, shape="diamond"),
+        "Mink_Blan_Hor":  minkowski_dim_oriented(img, radii, "hor"),
+        "Mink_Blan_Vert": minkowski_dim_oriented(img, radii, "vert"),
+        "Mink_VarDil_Sq":   minkowski_dimension(img, shape="square"),
+        "Mink_VarDil_Disk": minkowski_dimension(img, shape="disk"),
+        "Mink_VarDil_Diamond": minkowski_dimension(img, shape="diamond"),
+        "Mink_VarDil_Hor":  minkowski_dim_oriented(img, radii, "hor"),
+        "Mink_VarDil_Vert": minkowski_dim_oriented(img, radii, "vert"),
+    }
+
+# --------- ONE-IMAGE ANALYSIS ----------
+def analyze_one(path, group):
+    raw2d = read_gray_2d(path)                    # robust → 2-D gray [0,1]
+    img01 = np.clip(raw2d, 0, 1).astype(np.float32)
+    roi = img01 > 0                               # ROI = pixels > 0
+    if not np.any(roi):
+        raise ValueError("Image has empty ROI (no pixels > 0).")
+    base = img01 * roi.astype(img01.dtype)
+
+    # Optional: downscale for heavy ops (keeps ROI)
+    if MAX_SIDE_FOR_HEAVY and max(base.shape) > MAX_SIDE_FOR_HEAVY:
+        scale = MAX_SIDE_FOR_HEAVY / float(max(base.shape))
+        base = cv2.resize(base, (int(base.shape[1]*scale), int(base.shape[0]*scale)), interpolation=cv2.INTER_AREA)
+        roi  = base > 0
+
+    feats = {}
+    # Core dims & spectra
+    feats["ParDim"]    = partitioning_dimension(base, mask=roi)
+    feats["CubeCount"] = cube_counting(base, mask=roi)
+    feats["TriangDim"] = triangulation_dimension(base, mask=roi)
+    feats.update(fft_features(base, mask=roi))
+    feats["PoSpecDim"] = feats.get("FFT_CA1_Rectangular", np.nan)
+
+    # DBC family
+    feats["SasDifBCDim"] = sasaki_dbc_dimension(base, sizes=(4,8,16,32), alpha=0.5, mask=roi)
+    feats["DBC"]  = differential_box_counting_quantized(base, sizes=(4,8,16,32), L=256, mask=roi)
+    feats["RDBC"] = relative_differential_box_counting(base, sizes=(4,8,16,32), mask=roi)
+
+    # Correlation dims
+    feats["CorDim"]       = correlation_dimension_gp(base, radii=None, max_points=5000)
+    feats["Dir_Hor_Vert"] = directional_correlation_dimension(base, mode="hv",   radii=None, angle_tol_deg=10, max_points=5000)
+    feats["Dir_Mean_Rad"] = directional_correlation_dimension(base, mode="rad4", radii=None, angle_tol_deg=10, max_points=5000)
+
+    # Higuchi 1D profiles & FAI
+    H, W = base.shape
+    center_row = base[H//2, :]; center_col = base[:, W//2]
+    feats["Hig1D_Single_cent"] = higuchi_1d(base, "single")
+    feats["Hig1D_Meander"]     = higuchi_1d(base, "meander")
+    feats["Hig1D_Mean_RC"]     = 0.5 * (higuchi_1d(center_row) + higuchi_1d(center_col))
+    feats["Hig1D_Mean_4RL"]    = higuchi_1d(base, "4rl")
+    feats["Hig1D_Mean180RL"]   = higuchi_1d(base, "180rl")
+    feats["FAI_Single_cent"]   = float(abs(higuchi_1d(center_row) - higuchi_1d(center_col)))
+    feats["FAI_Meander"]       = float(abs(higuchi_1d(base, "meander") - higuchi_1d(base, "single")))
+    feats["FAI_Mean_RC"]       = float(abs(higuchi_1d(center_row) - higuchi_1d(center_col)))
+    feats["FAI_4RL"]           = float(np.std([higuchi_1d(p) for p in radial_profiles(base, [0,45,90,135])]))
+    feats["FAI_180RL"]         = float(np.std([higuchi_1d(p) for p in radial_profiles(base, np.arange(180))]))
+
+    # Higuchi 2D variants
+    feats["Hig2D_KFD"]        = _higuchi2d_slope_from_Lk(*_higuchi2d_surface_measures(base, kmax=10, variant="kfold"))
+    feats["Hig2D_MultD_1"]    = _higuchi2d_slope_from_Lk(*_higuchi2d_surface_measures(base, kmax=10, variant="mult1"))
+    feats["Hig2D_Mult_D2"]    = _higuchi2d_slope_from_Lk(*_higuchi2d_surface_measures(base, kmax=10, variant="mult2"))
+    feats["Hig2D_Sq_D"]       = higuchi_2d(base, variant="squared")
+    feats["Hig2D_Direct_D"]   = higuchi_2d(base, variant="direct")
+    feats["Hig2D_Triangle"]   = higuchi_2d(base, variant="triangle")
+
+    # Mass-radius, Minkowski, Lacunarity
+    feats["Mass_Rad_Dim"] = mass_radius(base, intensity_weighted=True)
+    feats.update(minkowski_variants(base))
+    lac = lacunarity_features(base, mask=roi)
+    feats["RP_Lacunarity"] = lac["RP_Lacunarity"]
+    feats["SV_Lacunarity"] = lac["SV_Lacunarity"]
+
+    # Complexity
+    feats.update(nkc(base))
+    feats.update(rgb_kc(base))
+    feats.update(fraclac_strict(base))
+    feats.update(mass_vs_distance_strict(base))
+
+    # ROI-masked GLCM / Stats / Pyramid / RGB-Higuchi
+    feats.update(glcm_features(base, mask=roi, levels=32))
+    feats.update(stats(base, mask=roi))
+    feats.update(pyramid_features(base, mask=roi))
+    feats.update(rgb_higuchi(base))
+
+    # Ensure all requested columns exist
+    for k in FEATURE_COLS:
+        feats.setdefault(k, np.nan)
+
+    # Back-compat typo
+    if "RGB_Hig_Kfold" in feats and "RGB_Hig_Kfolf" not in feats:
+        feats["RGB_Hig_Kfolf"] = feats["RGB_Hig_Kfold"]
+
+    feats["File"] = os.path.basename(path)
+    feats["Group"] = group
+    return feats
+
+# --------- BATCH ----------
+def batch_analyze(group_folders, output_csv):
+    records=[]
+    for group, folder in group_folders.items():
+        files = sorted([f for f in glob.glob(os.path.join(folder, "*.tif"))] +
+                       [f for f in glob.glob(os.path.join(folder, "*.tiff"))])
+        print(f"\n Found {len(files)} TIFF images in {group}: {folder}")
+        for fpath in tqdm(files, desc=f"Processing {group}"):
+            try:
+                rec = analyze_one(fpath, group)
+                records.append(rec)
+            except Exception as e:
+                print(f" Skipped {os.path.basename(fpath)}: {e}")
+
+    if not records:
+        print("No records produced. Check your inputs.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records)
+    cols = ["File","Group"] + FEATURE_COLS
+    extras = [c for c in df.columns if c not in cols]
+    df = df[[c for c in cols if c in df.columns] + extras]
+    df.to_csv(output_csv, index=False)
+    print(f"\n Saved → {output_csv}")
+    return df
+
+# --------- RUN ----------
+if __name__ == "__main__":
+    batch_analyze(GROUP_FOLDERS, OUTPUT_CSV)
+
